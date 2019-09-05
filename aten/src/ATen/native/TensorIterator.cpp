@@ -160,7 +160,7 @@ void TensorIterator::compute_types() {
     if (!tensor.defined()) {
       continue;
     }
-    if (op.device != tensor.device() || op.dtype != tensor.scalar_type()) {
+    if ((op.device != tensor.device() && !(true == op.device.is_cuda() && true == tensor.device().is_cuda())) || op.dtype != tensor.scalar_type()) {
       if (op.is_output) {
         AT_ERROR("output with device ", tensor.device(), " and dtype ", tensor.scalar_type(),
                  " doesn't match the desired device ", op.device, " and dtype ", op.dtype);

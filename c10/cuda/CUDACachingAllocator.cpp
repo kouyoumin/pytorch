@@ -470,11 +470,11 @@ struct THCCachingAllocator
   {
     // Try cudaMalloc. If cudaMalloc fails, frees all non-split cached blocks
     // and retries.
-    cudaError_t err = cudaMalloc(devPtr, size);
+    cudaError_t err = cudaMallocManaged(devPtr, size);
     if (err != cudaSuccess) {
       cudaGetLastError();  // reset the last CUDA error
       free_cached_blocks(device);
-      err = cudaMalloc(devPtr, size);
+      err = cudaMallocManaged(devPtr, size);
       if (err != cudaSuccess) {
         return err;
       }
