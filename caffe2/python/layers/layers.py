@@ -1,6 +1,6 @@
 ## @package layers
 # Module caffe2.python.layers.layers
-from __future__ import absolute_import, division, print_function, unicode_literals
+
 
 import logging
 from collections import namedtuple
@@ -244,8 +244,8 @@ def is_request_only_scalar(scalar):
     return True
 
 # Contains features accessed in a model layer of a given type
-# type: A string representing the kind of feature, consistent with FeatureSpec
-# ids: A set of feature IDs that are accessed in the model layer
+# `type`: A string representing the kind of feature, consistent with FeatureSpec
+# `ids`: A set of feature IDs that are accessed in the model layer
 AccessedFeatures = namedtuple("AccessedFeatures", ["type", "ids"])
 
 class ModelLayer(object):
@@ -361,8 +361,8 @@ class ModelLayer(object):
 
     def get_accessed_features(self):
         """
-        Return a map from field to AccessedFeatures, the map should contain all
-        features accessed in the model layer
+        Return a map from field to list of AccessedFeatures, the map should
+        contain all features accessed in the model layer
         """
         return {}
 

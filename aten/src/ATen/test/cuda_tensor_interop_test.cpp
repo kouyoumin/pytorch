@@ -1,6 +1,6 @@
-#include "gtest/gtest.h"
+#include <gtest/gtest.h>
 
-#include "ATen/ATen.h"
+#include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <caffe2/core/init.h>
 #include <caffe2/core/operator.h>
@@ -33,7 +33,7 @@ TEST(CUDACaffe2ToPytorch, SimpleLegacy) {
   ASSERT_TRUE(at_tensor.is_cuda());
 
   auto at_cpu = at_tensor.cpu();
-  auto it = at_cpu.data<int64_t>();
+  auto it = at_cpu.data_ptr<int64_t>();
   for (int64_t i = 0; i < 16; i++) {
     ASSERT_EQ(it[i], 777);
   }
@@ -52,7 +52,7 @@ TEST(CUDACaffe2ToPytorch, Simple) {
   ASSERT_TRUE(at_tensor.is_cuda());
 
   auto at_cpu = at_tensor.cpu();
-  auto it = at_cpu.data<int64_t>();
+  auto it = at_cpu.data_ptr<int64_t>();
   for (int64_t i = 0; i < 16; i++) {
     ASSERT_EQ(it[i], 777);
   }
@@ -84,6 +84,8 @@ TEST(CUDAPytorchToCaffe2, Op) {
 
   auto* c2_tensor_a = BlobSetTensor(workspace.CreateBlob("a"), caffe2::Tensor(at_tensor_a));
   auto* c2_tensor_b = BlobSetTensor(workspace.CreateBlob("b"), caffe2::Tensor(at_tensor_b));
+  (void)c2_tensor_a;
+  (void)c2_tensor_b;
 
   // Test Alias
   {

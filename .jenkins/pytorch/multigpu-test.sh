@@ -7,29 +7,23 @@
 # shellcheck disable=SC2034
 COMPACT_JOB_NAME="${BUILD_ENVIRONMENT}"
 
+# shellcheck source=./common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 echo "Testing pytorch (distributed only)"
-
-if [ -n "${IN_CIRCLECI}" ]; then
-  if [[ "$BUILD_ENVIRONMENT" == *-xenial-cuda9-* ]]; then
-    # TODO: move this to Docker
-    sudo apt-get update
-    sudo apt-get install -y --allow-downgrades --allow-change-held-packages libnccl-dev=2.2.13-1+cuda9.0 libnccl2=2.2.13-1+cuda9.0
-  fi
-
-  if [[ "$BUILD_ENVIRONMENT" == *-xenial-cuda8-* ]] || [[ "$BUILD_ENVIRONMENT" == *-xenial-cuda9-cudnn7-py2* ]]; then
-    # TODO: move this to Docker
-    sudo apt-get update
-    sudo apt-get install -y --allow-downgrades --allow-change-held-packages openmpi-bin libopenmpi-dev
-    sudo apt-get install -y --no-install-recommends openssh-client openssh-server
-    sudo mkdir -p /var/run/sshd
-  fi
+if [ -n "${IN_CI}" ]; then
+  # TODO move this to docker
+  pip_install unittest-xml-reporting
 fi
 
 python tools/download_mnist.py --quiet -d test/cpp/api/mnist
-OMP_NUM_THREADS=2 TORCH_CPP_TEST_MNIST_PATH="test/cpp/api/mnist" "$PWD/../cpp-build"/caffe2/build/bin/test_api
-time python test/run_test.py --verbose -i distributed
-time python test/run_test.py --verbose -i c10d
-time python test/run_test.py --verbose -i c10d_spawn
+OMP_NUM_THREADS=2 TORCH_CPP_TEST_MNIST_PATH="test/cpp/api/mnist" build/bin/test_api
+time python test/run_test.py --verbose -i distributed/test_c10d_common
+time python test/run_test.py --verbose -i distributed/test_c10d_gloo
+time python test/run_test.py --verbose -i distributed/test_c10d_nccl
+time python test/run_test.py --verbose -i distributed/test_c10d_spawn_gloo
+time python test/run_test.py --verbose -i distributed/test_c10d_spawn_nccl
+time python test/run_test.py --verbose -i distributed/test_store
+time python test/run_test.py --verbose -i distributed/test_pg_wrapper
+time python test/run_test.py --verbose -i distributed/rpc/cuda/test_tensorpipe_agent
 assert_git_not_dirty

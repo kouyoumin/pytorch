@@ -1,8 +1,3 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import operator_benchmark as op_bench
 import torch
 
@@ -11,25 +6,42 @@ import torch
 
 
 # Configs for PT Chunk operator
-chunks_short_configs = op_bench.cross_product_configs(
-    M=[8, 64, 128],
-    N=range(2, 10, 3),
-    chunks=[2, 3],
-    tags=["short"]
+chunk_short_configs = op_bench.config_list(
+    attr_names=["M", "N", "chunks"],
+    attrs=[
+        [8, 8, 2],
+        [256, 512, 2],
+        [512, 512, 2],
+    ],
+    cross_product_configs={
+        'device': ['cpu', 'cuda'],
+    },
+    tags=["short"],
+)
+
+chunks_long_configs = op_bench.cross_product_configs(
+    M=[128, 1024],
+    N=[128, 1024],
+    chunks=[2, 4],
+    device=['cpu', 'cuda'],
+    tags=['long']
 )
 
 
 class ChunkBenchmark(op_bench.TorchBenchmarkBase):
-    def init(self, M, N, chunks): 
-        self.input_one = torch.rand(M, N) 
-        self.chunks = chunks
-        self.set_module_name("chunks")
+    def init(self, M, N, chunks, device):
+        self.inputs = {
+            "input_one": torch.rand(M, N, device=device),
+            "chunks": chunks
+        }
+        self.set_module_name("chunk")
 
-    def forward(self):
-        return torch.chunk(self.input_one, self.chunks)
+    def forward(self, input_one, chunks: int):
+        return torch.chunk(input_one, chunks)
 
 
-op_bench.generate_pt_test(chunks_short_configs, ChunkBenchmark)
+op_bench.generate_pt_test(chunk_short_configs + chunks_long_configs,
+                          ChunkBenchmark)
 
 
 if __name__ == "__main__":

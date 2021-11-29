@@ -1,9 +1,10 @@
 ir_version: 4
 producer_name: "pytorch"
-producer_version: "1.2"
+producer_version: "CURRENT_VERSION"
 graph {
   node {
     output: "1"
+    name: "Constant_0"
     op_type: "Constant"
     attribute {
       name: "value"
@@ -16,13 +17,14 @@ graph {
   }
   node {
     input: "1"
-    input: "x"
+    input: "0"
     output: "2"
+    name: "Sub_1"
     op_type: "Sub"
   }
   name: "torch-jit-export"
   input {
-    name: "x"
+    name: "0"
     type {
       tensor_type {
         elem_type: 11

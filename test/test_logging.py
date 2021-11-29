@@ -1,5 +1,7 @@
+# Owner(s): ["module: unknown"]
+
 import torch
-from common_utils import TestCase, run_tests
+from torch.testing._internal.common_utils import TestCase, run_tests
 
 
 class LoggingTest(TestCase):

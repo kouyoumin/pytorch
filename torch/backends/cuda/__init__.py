@@ -83,16 +83,21 @@ class cuFFTPlanCacheManager(object):
             return super(cuFFTPlanCacheManager, self).__setattr__(name, value)
 
 
-class CUDAModule(object):
-    def __init__(self, m):
-        self.__dict__ = m.__dict__
-        # You have to retain the old module, otherwise it will
-        # get GC'ed and a lot of things will break.  See:
-        # https://stackoverflow.com/questions/47540722/how-do-i-use-the-sys-modules-replacement-trick-in-init-py-on-python-2
-        self.__old_mod = m
+class cuBLASModule:
+    def __getattr__(self, name):
+        if name == "allow_tf32":
+            return torch._C._get_cublas_allow_tf32()
+        elif name == "allow_fp16_reduced_precision_reduction":
+            return torch._C._get_cublas_allow_fp16_reduced_precision_reduction()
+        raise AssertionError("Unknown attribute " + name)
 
-    cufft_plan_cache = cuFFTPlanCacheManager()
+    def __setattr__(self, name, value):
+        if name == "allow_tf32":
+            return torch._C._set_cublas_allow_tf32(value)
+        elif name == "allow_fp16_reduced_precision_reduction":
+            return torch._C._set_cublas_allow_fp16_reduced_precision_reduction(value)
+        raise AssertionError("Unknown attribute " + name)
 
-# This is the sys.modules replacement trick, see
-# https://stackoverflow.com/questions/2447353/getattr-on-a-module/7668273#7668273
-sys.modules[__name__] = CUDAModule(sys.modules[__name__])
+
+cufft_plan_cache = cuFFTPlanCacheManager()
+matmul = cuBLASModule()

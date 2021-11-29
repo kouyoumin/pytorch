@@ -2,10 +2,146 @@
 #include <ATen/Parallel.h>
 #include <ATen/NativeFunctions.h>
 #include <ATen/native/Pool.h>
+#include <c10/util/irange.h>
 #include <tuple>
 
 
 namespace at {
+
+namespace meta{
+using namespace native;
+
+TORCH_META_FUNC(avg_pool3d) (
+  const Tensor& input,
+  IntArrayRef kernel_size,
+  IntArrayRef stride,
+  IntArrayRef padding,
+  bool ceil_mode,
+  bool count_include_pad,
+  c10::optional<int64_t> divisor_override
+) {
+  // #20866, #22032: Guarantee this for the official C++ API?
+  TORCH_CHECK(kernel_size.size() == 1 || kernel_size.size() == 3,
+    "avg_pool3d: kernel_size must be a single int, or a tuple of three ints");
+  const int kT = safe_downcast<int, int64_t>(kernel_size[0]);
+  const int kH = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[1]);
+  const int kW = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[2]);
+
+  TORCH_CHECK(stride.empty() || stride.size() == 1 || stride.size() == 3,
+    "avg_pool3d: stride must be omitted, a single int, or a tuple of three ints");
+  const int dT = stride.empty() ? kT : safe_downcast<int, int64_t>(stride[0]);
+  const int dH = stride.empty() ? kH :
+                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[1]);
+  const int dW = stride.empty() ? kW :
+                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[2]);
+
+  TORCH_CHECK(padding.size() == 1 || padding.size() == 3,
+    "avg_pool3d: padding must be a single int, or a tuple of three ints");
+  const int padT = safe_downcast<int, int64_t>(padding[0]);
+  const int padH = padding.size() == 1 ? padT : safe_downcast<int, int64_t>(padding[1]);
+  const int padW = padding.size() == 1 ? padT : safe_downcast<int, int64_t>(padding[2]);
+
+  TORCH_CHECK((input.ndimension() == 4 || input.ndimension() == 5),
+    "non-empty 4D or 5D (batch mode) tensor expected for input");
+
+  TORCH_CHECK(!divisor_override.has_value() || divisor_override.value() != 0,
+    "divisor must be not zero");
+
+  /* sizes */
+  const int64_t nbatch = input.size(0);
+  const int64_t nslices = input.size(-4);
+  const int64_t itime = input.size(-3);
+  const int64_t iheight = input.size(-2);
+  const int64_t iwidth = input.size(-1);
+
+  const int64_t otime = pooling_output_shape<int64_t>(itime, kT, padT, dT, 1, ceil_mode);
+  const int64_t oheight = pooling_output_shape<int64_t>(iheight, kH, padH, dH, 1, ceil_mode);
+  const int64_t owidth = pooling_output_shape<int64_t>(iwidth, kW, padW, dW, 1, ceil_mode);
+
+  pool3d_shape_check(
+    input,
+    nslices,
+    kT, kH, kW,
+    dT, dH, dW,
+    padT, padH, padW,
+    1, 1, 1,
+    itime, iheight, iwidth,
+    otime, oheight, owidth,
+    "avg_pool3d()",
+    /*check_input_size=*/ true);
+
+  /* resize output */
+  if (input.ndimension() == 4) {
+    set_output(0, {nslices, otime, oheight, owidth}, input.options());
+  }
+  else {
+    set_output(0, {nbatch, nslices, otime, oheight, owidth}, input.options());
+  }
+}
+
+TORCH_META_FUNC(avg_pool3d_backward) (
+  const Tensor& gradOutput_,
+  const Tensor& input,
+  IntArrayRef kernel_size,
+  IntArrayRef stride,
+  IntArrayRef padding,
+  bool ceil_mode,
+  bool count_include_pad,
+  c10::optional<int64_t> divisor_override
+) {
+  // #20866, #22032: Guarantee this for the official C++ API?
+  TORCH_CHECK(kernel_size.size() == 1 || kernel_size.size() == 3,
+    "avg_pool3d: kernel_size must be a single int, or a tuple of three ints");
+  const int kT = safe_downcast<int, int64_t>(kernel_size[0]);
+  const int kH = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[1]);
+  const int kW = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[2]);
+
+  TORCH_CHECK(stride.empty() || stride.size() == 1 || stride.size() == 3,
+    "avg_pool3d: stride must be omitted, a single int, or a tuple of three ints");
+  const int dT = stride.empty() ? kT : safe_downcast<int, int64_t>(stride[0]);
+  const int dH = stride.empty() ? kH :
+                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[1]);
+  const int dW = stride.empty() ? kW :
+                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[2]);
+
+  TORCH_CHECK(padding.size() == 1 || padding.size() == 3,
+    "avg_pool3d: padding must be a single int, or a tuple of three ints");
+  const int padT = safe_downcast<int, int64_t>(padding[0]);
+  const int padH = padding.size() == 1 ? padT : safe_downcast<int, int64_t>(padding[1]);
+  const int padW = padding.size() == 1 ? padT : safe_downcast<int, int64_t>(padding[2]);
+
+  TORCH_CHECK((input.ndimension() == 4 || input.ndimension() == 5),
+    "non-empty 4D or 5D (batch mode) tensor expected for input");
+
+  TORCH_CHECK(!divisor_override.has_value() || divisor_override.value() != 0, "divisor must be not zero");
+
+  const int64_t nslices = input.size(-4);
+  const int64_t itime = input.size(-3);
+  const int64_t iheight = input.size(-2);
+  const int64_t iwidth = input.size(-1);
+
+  /* XXX shape check behavior from TH */
+  const int64_t otime_for_shape_check = pooling_output_shape<int64_t>(itime, kT, padT, dT, 1, ceil_mode);
+  const int64_t oheight_for_shape_check = pooling_output_shape<int64_t>(iheight, kH, padH, dH, 1, ceil_mode);
+  const int64_t owidth_for_shape_check = pooling_output_shape<int64_t>(iwidth, kW, padW, dW, 1, ceil_mode);
+
+  avg_pool3d_backward_shape_check(
+    input,
+    gradOutput_,
+    nslices,
+    kT, kH, kW,
+    dT, dH, dW,
+    padT, padH, padW,
+    itime, iheight, iwidth,
+    otime_for_shape_check, oheight_for_shape_check, owidth_for_shape_check,
+    "avg_pool3d_backward()");
+
+  /* resize output */
+  set_output(0, input.sizes(), input.options());
+}
+
+} // namespace meta
+
 namespace native {
 
 namespace {
@@ -34,8 +170,8 @@ static void avg_pool3d_out_frame(
           c10::optional<int64_t> divisor_override)
 {
   at::parallel_for(0, nslices, 0, [&](int64_t start, int64_t end) {
-    for (auto k = start; k < end; k++)
-    {
+    for (const auto k : c10::irange(start, end)) {
+      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
       int64_t i, j, ti;
 
       /* local pointers. */
@@ -66,6 +202,12 @@ static void avg_pool3d_out_frame(
             hend = std::min(hend, iheight);
             wend = std::min(wend, iwidth);
 
+            if (tstart >= tend || hstart >= hend || wstart >= wend) {
+              ++op;
+              continue;
+            }
+
+            // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
             int divide_factor;
             if (divisor_override.has_value()) {
               divide_factor = divisor_override.value();
@@ -73,12 +215,14 @@ static void avg_pool3d_out_frame(
               if(count_include_pad) {
                 divide_factor = pool_size;
               } else {
+                // NOLINTNEXTLINE(cppcoreguidelines-narrowing-conversions,bugprone-narrowing-conversions)
                 divide_factor = (tend - tstart) * (hend - hstart) * (wend - wstart);
               }
             }
 
             /* compute local sum: */
             scalar_t sum = 0.0;
+            // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
             int64_t x, y, z;
 
             for (z = tstart; z < tend; z++)
@@ -101,19 +245,18 @@ static void avg_pool3d_out_frame(
   });
 }
 
-void avg_pool3d_out_cpu_template(
-  Tensor& output,
+} // anonymous namespace
+
+TORCH_IMPL_FUNC(avg_pool3d_out_cpu) (
   const Tensor& input_,
   IntArrayRef kernel_size,
   IntArrayRef stride,
   IntArrayRef padding,
   bool ceil_mode,
   bool count_include_pad,
-  c10::optional<int64_t> divisor_override)
-{
-  // #20866, #22032: Guarantee this for the official C++ API?
-  TORCH_CHECK(kernel_size.size() == 1 || kernel_size.size() == 3,
-    "avg_pool3d: kernel_size must be a single int, or a tuple of three ints");
+  c10::optional<int64_t> divisor_override,
+  const Tensor& output
+) {
   const int kT = safe_downcast<int, int64_t>(kernel_size[0]);
   const int kH = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[1]);
   const int kW = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[2]);
@@ -147,30 +290,16 @@ void avg_pool3d_out_cpu_template(
   const int64_t oheight = pooling_output_shape<int64_t>(iheight, kH, padH, dH, 1, ceil_mode);
   const int64_t owidth = pooling_output_shape<int64_t>(iwidth, kW, padW, dW, 1, ceil_mode);
 
-  pool3d_shape_check(
-    input_,
-    nslices,
-    kT, kH, kW,
-    dT, dH, dW,
-    padT, padH, padW,
-    1, 1, 1,
-    itime, iheight, iwidth,
-    otime, oheight, owidth,
-    /*check_input_size=*/ true);
-
   /* get contiguous input */
   Tensor input = input_.contiguous();
 
   if (input.ndimension() == 4) /* non-batch mode */
   {
-    /* resize output */
-    output.resize_({nslices, otime, oheight, owidth});
-
     AT_DISPATCH_FLOATING_TYPES_AND(at::ScalarType::Long, input.scalar_type(),
       "avg_pool3d_out_frame",
       [&] {
-        scalar_t *input_data = input.data<scalar_t>();
-        scalar_t *output_data = output.data<scalar_t>();
+        scalar_t *input_data = input.data_ptr<scalar_t>();
+        scalar_t *output_data = output.data_ptr<scalar_t>();
 
         avg_pool3d_out_frame(
           input_data, output_data, nslices,
@@ -189,17 +318,14 @@ void avg_pool3d_out_cpu_template(
     const int64_t istride = nslices * itime * iwidth * iheight;
     const int64_t ostride = nslices * otime * owidth * oheight;
 
-    /* resize output */
-    output.resize_({nbatch, nslices, otime, oheight, owidth});
-
     AT_DISPATCH_FLOATING_TYPES_AND(at::ScalarType::Long, input.scalar_type(),
       "avg_pool3d_out_frame",
       [&] {
-        scalar_t *input_data = input.data<scalar_t>();
-        scalar_t *output_data = output.data<scalar_t>();
+        scalar_t *input_data = input.data_ptr<scalar_t>();
+        scalar_t *output_data = output.data_ptr<scalar_t>();
 
         at::parallel_for(0, nbatch, 0, [&](int64_t start, int64_t end) {
-          for (auto p = start; p < end; p++) {
+          for (const auto p : c10::irange(start, end)) {
             avg_pool3d_out_frame(
               input_data + p * istride, output_data + p * ostride, nslices,
               itime, iwidth, iheight,
@@ -215,6 +341,8 @@ void avg_pool3d_out_cpu_template(
     });
   }
 }
+
+namespace {
 
 template <typename scalar_t>
 static void avg_pool3d_backward_out_frame(
@@ -240,8 +368,8 @@ static void avg_pool3d_backward_out_frame(
           c10::optional<int64_t> divisor_override)
 {
   at::parallel_for(0, nslices, 0, [&](int64_t start, int64_t end) {
-    for (auto k = start; k < end; k++)
-    {
+    for (const auto k : c10::irange(start, end)) {
+      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
       int64_t i, j, ti;
 
       /* local pointers */
@@ -271,6 +399,7 @@ static void avg_pool3d_backward_out_frame(
             hend = std::min(hend, iheight);
             wend = std::min(wend, iwidth);
 
+            // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
             int divide_factor;
             if (divisor_override.has_value()) {
               divide_factor = divisor_override.value();
@@ -278,6 +407,7 @@ static void avg_pool3d_backward_out_frame(
               if(count_include_pad) {
                 divide_factor = pool_size;
               } else {
+                // NOLINTNEXTLINE(cppcoreguidelines-narrowing-conversions,bugprone-narrowing-conversions)
                 divide_factor = (tend - tstart) * (hend - hstart) * (wend - wstart);
               }
             }
@@ -285,6 +415,7 @@ static void avg_pool3d_backward_out_frame(
             /* scatter gradients out to footprint: */
             scalar_t val  = *op++;
 
+            // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
             int64_t x,y,z;
             for (z = tstart; z < tend; z++)
             {
@@ -303,8 +434,9 @@ static void avg_pool3d_backward_out_frame(
   });
 }
 
-Tensor& avg_pool3d_backward_out_cpu_template(
-  Tensor& gradInput,
+} // anonymous namespace
+
+TORCH_IMPL_FUNC(avg_pool3d_backward_out_cpu) (
   const Tensor& gradOutput_,
   const Tensor& input,
   IntArrayRef kernel_size,
@@ -312,11 +444,9 @@ Tensor& avg_pool3d_backward_out_cpu_template(
   IntArrayRef padding,
   bool ceil_mode,
   bool count_include_pad,
-  c10::optional<int64_t> divisor_override)
-{
-  // #20866, #22032: Guarantee this for the official C++ API?
-  TORCH_CHECK(kernel_size.size() == 1 || kernel_size.size() == 3,
-    "avg_pool3d: kernel_size must be a single int, or a tuple of three ints");
+  c10::optional<int64_t> divisor_override,
+  const Tensor& gradInput
+) {
   const int kT = safe_downcast<int, int64_t>(kernel_size[0]);
   const int kH = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[1]);
   const int kW = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[2]);
@@ -352,23 +482,6 @@ Tensor& avg_pool3d_backward_out_cpu_template(
   const int64_t oheight = gradOutput.size(-2);
   const int64_t owidth = gradOutput.size(-1);
 
-  /* XXX shape check behavior from TH */
-  const int64_t otime_for_shape_check = pooling_output_shape<int64_t>(itime, kT, padT, dT, 1, ceil_mode);
-  const int64_t oheight_for_shape_check = pooling_output_shape<int64_t>(iheight, kH, padH, dH, 1, ceil_mode);
-  const int64_t owidth_for_shape_check = pooling_output_shape<int64_t>(iwidth, kW, padW, dW, 1, ceil_mode);
-
-  avg_pool3d_backward_shape_check(
-    input,
-    gradOutput_,
-    nslices,
-    kT, kH, kW,
-    dT, dH, dW,
-    padT, padH, padW,
-    itime, iheight, iwidth,
-    otime_for_shape_check, oheight_for_shape_check, owidth_for_shape_check);
-
-  /* resize */
-  gradInput.resize_as_(input);
   gradInput.zero_();
 
   /* backprop */
@@ -377,8 +490,8 @@ Tensor& avg_pool3d_backward_out_cpu_template(
     AT_DISPATCH_FLOATING_TYPES_AND(at::ScalarType::Long, input.scalar_type(),
       "avg_pool3d_backward_out_frame",
       [&] {
-       scalar_t *gradInput_data = gradInput.data<scalar_t>();
-       scalar_t *gradOutput_data = gradOutput.data<scalar_t>();
+       scalar_t *gradInput_data = gradInput.data_ptr<scalar_t>();
+       scalar_t *gradOutput_data = gradOutput.data_ptr<scalar_t>();
 
        avg_pool3d_backward_out_frame(
          gradInput_data, gradOutput_data,
@@ -401,12 +514,11 @@ Tensor& avg_pool3d_backward_out_cpu_template(
     AT_DISPATCH_FLOATING_TYPES_AND(at::ScalarType::Long, input.scalar_type(),
       "avg_pool3d_backward_out_frame",
       [&] {
-        scalar_t *gradInput_data = gradInput.data<scalar_t>();
-        scalar_t *gradOutput_data = gradOutput.data<scalar_t>();
+        scalar_t *gradInput_data = gradInput.data_ptr<scalar_t>();
+        scalar_t *gradOutput_data = gradOutput.data_ptr<scalar_t>();
 
         at::parallel_for(0, nbatch, 0, [&](int64_t start, int64_t end) {
-          for (auto p = start; p < end; p++)
-          {
+          for (const auto p : c10::irange(start, end)) {
             avg_pool3d_backward_out_frame(
               gradInput_data  + p * istride, gradOutput_data + p * ostride, nslices,
               itime, iwidth, iheight,
@@ -421,102 +533,6 @@ Tensor& avg_pool3d_backward_out_cpu_template(
         });
     });
   }
-
-  return gradInput;
-}
-
-} // namespace
-
-Tensor& avg_pool3d_out_cpu(
-  Tensor& output,
-  const Tensor& input,
-  IntArrayRef kernel_size,
-  IntArrayRef stride,
-  IntArrayRef padding,
-  bool ceil_mode,
-  bool count_include_pad,
-  c10::optional<int64_t> divisor_override)
-{
-  avg_pool3d_out_cpu_template(
-    output,
-    input,
-    kernel_size,
-    stride,
-    padding,
-    ceil_mode,
-    count_include_pad,
-    divisor_override);
-  return output;
-}
-
-Tensor avg_pool3d_cpu(
-  const Tensor& input,
-  IntArrayRef kernel_size,
-  IntArrayRef stride,
-  IntArrayRef padding,
-  bool ceil_mode,
-  bool count_include_pad,
-  c10::optional<int64_t> divisor_override)
-{
-  Tensor output = at::empty({0}, input.options());
-  avg_pool3d_out_cpu_template(
-    output,
-    input,
-    kernel_size,
-    stride,
-    padding,
-    ceil_mode,
-    count_include_pad,
-    divisor_override);
-  return output;
-}
-
-Tensor& avg_pool3d_backward_out_cpu(
-  Tensor& gradInput,
-  const Tensor& gradOutput_,
-  const Tensor& input,
-  IntArrayRef kernel_size,
-  IntArrayRef stride,
-  IntArrayRef padding,
-  bool ceil_mode,
-  bool count_include_pad,
-  c10::optional<int64_t> divisor_override)
-{
-  avg_pool3d_backward_out_cpu_template(
-    gradInput,
-    gradOutput_,
-    input,
-    kernel_size,
-    stride,
-    padding,
-    ceil_mode,
-    count_include_pad,
-    divisor_override);
-  return gradInput;
-}
-
-Tensor avg_pool3d_backward_cpu(
-  const Tensor& gradOutput_,
-  const Tensor& input,
-  IntArrayRef kernel_size,
-  IntArrayRef stride,
-  IntArrayRef padding,
-  bool ceil_mode,
-  bool count_include_pad,
-  c10::optional<int64_t> divisor_override)
-{
-  auto gradInput = at::zeros_like(input);
-  avg_pool3d_backward_out_cpu_template(
-    gradInput,
-    gradOutput_,
-    input,
-    kernel_size,
-    stride,
-    padding,
-    ceil_mode,
-    count_include_pad,
-    divisor_override);
-  return gradInput;
 }
 
 } // at::native

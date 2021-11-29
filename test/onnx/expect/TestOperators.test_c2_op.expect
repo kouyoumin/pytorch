@@ -1,6 +1,6 @@
 ir_version: 4
 producer_name: "pytorch"
-producer_version: "1.2"
+producer_version: "CURRENT_VERSION"
 graph {
   node {
     input: "0"
@@ -9,6 +9,7 @@ graph {
     input: "3"
     output: "4"
     output: "5"
+    name: "GenerateProposals_0"
     op_type: "GenerateProposals"
     attribute {
       name: "spatial_scale"
@@ -146,10 +147,10 @@ graph {
         elem_type: 1
         shape {
           dim {
-            dim_value: 0
+            dim_param: "GenerateProposals4_dim_0"
           }
           dim {
-            dim_value: 5
+            dim_param: "GenerateProposals4_dim_1"
           }
         }
       }
@@ -162,7 +163,7 @@ graph {
         elem_type: 1
         shape {
           dim {
-            dim_value: 0
+            dim_param: "GenerateProposals5_dim_0"
           }
         }
       }

@@ -1,25 +1,49 @@
 import torch
+from . import _functional as F
 from .optimizer import Optimizer
 
 
 class Adagrad(Optimizer):
-    """Implements Adagrad algorithm.
+    r"""Implements Adagrad algorithm.
 
-    It has been proposed in `Adaptive Subgradient Methods for Online Learning
+    .. math::
+       \begin{aligned}
+            &\rule{110mm}{0.4pt}                                                                 \\
+            &\textbf{input}      : \gamma \text{ (lr)}, \: \theta_0 \text{ (params)}, \: f(\theta)
+                \text{ (objective)}, \: \lambda \text{ (weight decay)},                          \\
+            &\hspace{12mm}    \tau \text{ (initial accumulator value)}, \: \eta\text{ (lr decay)}\\
+            &\textbf{initialize} :  state\_sum_0 \leftarrow 0                             \\[-1.ex]
+            &\rule{110mm}{0.4pt}                                                                 \\
+            &\textbf{for} \: t=1 \: \textbf{to} \: \ldots \: \textbf{do}                         \\
+            &\hspace{5mm}g_t           \leftarrow   \nabla_{\theta} f_t (\theta_{t-1})           \\
+            &\hspace{5mm} \tilde{\gamma}    \leftarrow \gamma / (1 +(t-1) \eta)                  \\
+            &\hspace{5mm} \textbf{if} \: \lambda \neq 0                                          \\
+            &\hspace{10mm} g_t \leftarrow g_t + \lambda \theta_{t-1}                             \\
+            &\hspace{5mm}state\_sum_t  \leftarrow  state\_sum_{t-1} + g^2_t                      \\
+            &\hspace{5mm}\theta_t \leftarrow
+                \theta_{t-1}- \tilde{\gamma} \frac{g_t}{\sqrt{state\_sum_t}+\epsilon}            \\
+            &\rule{110mm}{0.4pt}                                                          \\[-1.ex]
+            &\bf{return} \:  \theta_t                                                     \\[-1.ex]
+            &\rule{110mm}{0.4pt}                                                          \\[-1.ex]
+       \end{aligned}
+
+    For further details regarding the algorithm we refer to `Adaptive Subgradient Methods for Online Learning
     and Stochastic Optimization`_.
 
-    Arguments:
+    Args:
         params (iterable): iterable of parameters to optimize or dicts defining
             parameter groups
         lr (float, optional): learning rate (default: 1e-2)
         lr_decay (float, optional): learning rate decay (default: 0)
         weight_decay (float, optional): weight decay (L2 penalty) (default: 0)
+        eps (float, optional): term added to the denominator to improve
+            numerical stability (default: 1e-10)
 
     .. _Adaptive Subgradient Methods for Online Learning and Stochastic
         Optimization: http://jmlr.org/papers/v12/duchi11a.html
     """
 
-    def __init__(self, params, lr=1e-2, lr_decay=0, weight_decay=0, initial_accumulator_value=0):
+    def __init__(self, params, lr=1e-2, lr_decay=0, weight_decay=0, initial_accumulator_value=0, eps=1e-10):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if not 0.0 <= lr_decay:
@@ -28,8 +52,10 @@ class Adagrad(Optimizer):
             raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
         if not 0.0 <= initial_accumulator_value:
             raise ValueError("Invalid initial_accumulator_value value: {}".format(initial_accumulator_value))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
 
-        defaults = dict(lr=lr, lr_decay=lr_decay, weight_decay=weight_decay,
+        defaults = dict(lr=lr, lr_decay=lr_decay, eps=eps, weight_decay=weight_decay,
                         initial_accumulator_value=initial_accumulator_value)
         super(Adagrad, self).__init__(params, defaults)
 
@@ -37,7 +63,9 @@ class Adagrad(Optimizer):
             for p in group['params']:
                 state = self.state[p]
                 state['step'] = 0
-                state['sum'] = torch.full_like(p.data, initial_accumulator_value)
+                init_value = complex(initial_accumulator_value, initial_accumulator_value) if torch.is_complex(p) \
+                    else initial_accumulator_value
+                state['sum'] = torch.full_like(p, init_value, memory_format=torch.preserve_format)
 
     def share_memory(self):
         for group in self.param_groups:
@@ -45,52 +73,43 @@ class Adagrad(Optimizer):
                 state = self.state[p]
                 state['sum'].share_memory_()
 
+    @torch.no_grad()
     def step(self, closure=None):
         """Performs a single optimization step.
 
-        Arguments:
+        Args:
             closure (callable, optional): A closure that reevaluates the model
                 and returns the loss.
         """
         loss = None
         if closure is not None:
-            loss = closure()
+            with torch.enable_grad():
+                loss = closure()
 
         for group in self.param_groups:
+            params_with_grad = []
+            grads = []
+            state_sums = []
+            state_steps = []
+
             for p in group['params']:
-                if p.grad is None:
-                    continue
+                if p.grad is not None:
+                    params_with_grad.append(p)
+                    grads.append(p.grad)
+                    state = self.state[p]
+                    state_sums.append(state['sum'])
+                    # update the steps for each param group update
+                    state['step'] += 1
+                    # record the step after step update
+                    state_steps.append(state['step'])
 
-                grad = p.grad.data
-                state = self.state[p]
-
-                state['step'] += 1
-
-                if group['weight_decay'] != 0:
-                    if p.grad.data.is_sparse:
-                        raise RuntimeError("weight_decay option is not compatible with sparse gradients")
-                    grad = grad.add(group['weight_decay'], p.data)
-
-                clr = group['lr'] / (1 + (state['step'] - 1) * group['lr_decay'])
-
-                if grad.is_sparse:
-                    grad = grad.coalesce()  # the update is non-linear so indices must be unique
-                    grad_indices = grad._indices()
-                    grad_values = grad._values()
-                    size = grad.size()
-
-                    def make_sparse(values):
-                        constructor = grad.new
-                        if grad_indices.dim() == 0 or values.dim() == 0:
-                            return constructor().resize_as_(grad)
-                        return constructor(grad_indices, values, size)
-                    state['sum'].add_(make_sparse(grad_values.pow(2)))
-                    std = state['sum'].sparse_mask(grad)
-                    std_values = std._values().sqrt_().add_(1e-10)
-                    p.data.add_(-clr, make_sparse(grad_values / std_values))
-                else:
-                    state['sum'].addcmul_(1, grad, grad)
-                    std = state['sum'].sqrt().add_(1e-10)
-                    p.data.addcdiv_(-clr, grad, std)
+            F.adagrad(params_with_grad,
+                      grads,
+                      state_sums,
+                      state_steps,
+                      lr=group['lr'],
+                      weight_decay=group['weight_decay'],
+                      lr_decay=group['lr_decay'],
+                      eps=group['eps'])
 
         return loss

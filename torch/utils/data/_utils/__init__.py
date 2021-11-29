@@ -11,7 +11,7 @@ import sys
 import atexit
 
 # old private location of the ExceptionWrapper that some users rely on:
-from torch._utils import ExceptionWrapper  # noqa: F401
+from torch._utils import ExceptionWrapper
 
 
 IS_WINDOWS = sys.platform == "win32"
@@ -35,6 +35,13 @@ https://github.com/python/cpython/blob/d4d60134b29290049e28df54f23493de4f1824b6/
 """
 
 
+try:
+    import numpy
+    HAS_NUMPY = True
+except ModuleNotFoundError:
+    HAS_NUMPY = False
+
+
 def _set_python_exit_flag():
     global python_exit_status
     python_exit_status = True
@@ -42,4 +49,4 @@ def _set_python_exit_flag():
 atexit.register(_set_python_exit_flag)
 
 
-from . import worker, signal_handling, pin_memory, collate, fetch  # noqa: F401
+from . import worker, signal_handling, pin_memory, collate, fetch

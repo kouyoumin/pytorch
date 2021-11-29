@@ -1,6 +1,7 @@
 import math
 import warnings
 from functools import total_ordering
+from typing import Type, Dict, Callable, Tuple
 
 import torch
 from torch._six import inf
@@ -9,6 +10,8 @@ from .bernoulli import Bernoulli
 from .beta import Beta
 from .binomial import Binomial
 from .categorical import Categorical
+from .cauchy import Cauchy
+from .continuous_bernoulli import ContinuousBernoulli
 from .dirichlet import Dirichlet
 from .distribution import Distribution
 from .exponential import Exponential
@@ -28,10 +31,10 @@ from .pareto import Pareto
 from .poisson import Poisson
 from .transformed_distribution import TransformedDistribution
 from .uniform import Uniform
-from .utils import _sum_rightmost
+from .utils import _sum_rightmost, euler_constant as _euler_gamma
 
 _KL_REGISTRY = {}  # Source of truth mapping a few general (type, type) pairs to functions.
-_KL_MEMOIZE = {}  # Memoized version mapping many specific (type, type) pairs to functions.
+_KL_MEMOIZE: Dict[Tuple[Type, Type], Callable] = {}  # Memoized version mapping many specific (type, type) pairs to functions.
 
 
 def register_kl(type_p, type_q):
@@ -101,8 +104,10 @@ def _dispatch_kl(type_p, type_q):
     if not matches:
         return NotImplemented
     # Check that the left- and right- lexicographic orders agree.
-    left_p, left_q = min(_Match(*m) for m in matches).types
-    right_q, right_p = min(_Match(*reversed(m)) for m in matches).types
+    # mypy isn't smart enough to know that _Match implements __lt__
+    # see: https://github.com/python/typing/issues/760#issuecomment-710670503
+    left_p, left_q = min(_Match(*m) for m in matches).types  # type: ignore[type-var]
+    right_q, right_p = min(_Match(*reversed(m)) for m in matches).types  # type: ignore[type-var]
     left_fun = _KL_REGISTRY[left_p, left_q]
     right_fun = _KL_REGISTRY[right_p, right_q]
     if left_fun is not right_fun:
@@ -169,8 +174,6 @@ def kl_divergence(p, q):
 # KL Divergence Implementations
 ################################################################################
 
-_euler_gamma = 0.57721566490153286060
-
 # Same distributions
 
 
@@ -217,6 +220,14 @@ def _kl_categorical_categorical(p, q):
     return t.sum(-1)
 
 
+@register_kl(ContinuousBernoulli, ContinuousBernoulli)
+def _kl_continuous_bernoulli_continuous_bernoulli(p, q):
+    t1 = p.mean * (p.logits - q.logits)
+    t2 = p._cont_bern_log_norm() + torch.log1p(-p.probs)
+    t3 = - q._cont_bern_log_norm() - torch.log1p(-q.probs)
+    return t1 + t2 + t3
+
+
 @register_kl(Dirichlet, Dirichlet)
 def _kl_dirichlet_dirichlet(p, q):
     # From http://bariskurt.com/kullback-leibler-divergence-between-two-dirichlet-and-beta-distributions/
@@ -245,7 +256,7 @@ def _kl_expfamily_expfamily(p, q):
     q_nparams = q._natural_params
     lg_normal = p._log_normalizer(*p_nparams)
     gradients = torch.autograd.grad(lg_normal.sum(), p_nparams, create_graph=True)
-    result = q._log_normalizer(*q_nparams) - lg_normal.clone()
+    result = q._log_normalizer(*q_nparams) - lg_normal
     for pnp, qnp, g in zip(p_nparams, q_nparams, gradients):
         term = (qnp - pnp) * g
         result -= _sum_rightmost(term, len(q.event_shape))
@@ -309,7 +320,7 @@ def _kl_lowrankmultivariatenormal_lowrankmultivariatenormal(p, q):
     # Expands term2 according to
     # inv(qcov) @ pcov = [inv(qD) - inv(qD) @ qW @ inv(qC) @ qW.T @ inv(qD)] @ (pW @ pW.T + pD)
     #                  = [inv(qD) - A.T @ A] @ (pD + pW @ pW.T)
-    qWt_qDinv = (q._unbroadcasted_cov_factor.transpose(-1, -2) /
+    qWt_qDinv = (q._unbroadcasted_cov_factor.mT /
                  q._unbroadcasted_cov_diag.unsqueeze(-2))
     A = torch.triangular_solve(qWt_qDinv, q._capacitance_tril, upper=False)[0]
     term21 = (p._unbroadcasted_cov_diag / q._unbroadcasted_cov_diag).sum(-1)
@@ -336,7 +347,7 @@ def _kl_multivariatenormal_lowrankmultivariatenormal(p, q):
     # Expands term2 according to
     # inv(qcov) @ pcov = [inv(qD) - inv(qD) @ qW @ inv(qC) @ qW.T @ inv(qD)] @ p_tril @ p_tril.T
     #                  = [inv(qD) - A.T @ A] @ p_tril @ p_tril.T
-    qWt_qDinv = (q._unbroadcasted_cov_factor.transpose(-1, -2) /
+    qWt_qDinv = (q._unbroadcasted_cov_factor.mT /
                  q._unbroadcasted_cov_diag.unsqueeze(-2))
     A = torch.triangular_solve(qWt_qDinv, q._capacitance_tril, upper=False)[0]
     term21 = _batch_trace_XXT(p._unbroadcasted_scale_tril *
@@ -426,10 +437,7 @@ def _kl_transformed_transformed(p, q):
         raise NotImplementedError
     if p.event_shape != q.event_shape:
         raise NotImplementedError
-    # extra_event_dim = len(p.event_shape) - len(p.base_dist.event_shape)
-    extra_event_dim = len(p.event_shape)
-    base_kl_divergence = kl_divergence(p.base_dist, q.base_dist)
-    return _sum_rightmost(base_kl_divergence, extra_event_dim)
+    return kl_divergence(p.base_dist, q.base_dist)
 
 
 @register_kl(Uniform, Uniform)
@@ -443,6 +451,11 @@ def _kl_uniform_uniform(p, q):
 @register_kl(Bernoulli, Poisson)
 def _kl_bernoulli_poisson(p, q):
     return -p.entropy() - (p.probs * q.rate.log() - q.rate)
+
+
+@register_kl(Beta, ContinuousBernoulli)
+def _kl_beta_continuous_bernoulli(p, q):
+    return -p.entropy() - p.mean * q.logits - torch.log1p(-q.probs) - q._cont_bern_log_norm()
 
 
 @register_kl(Beta, Pareto)
@@ -484,8 +497,40 @@ def _kl_beta_uniform(p, q):
     result[(q.low > p.support.lower_bound) | (q.high < p.support.upper_bound)] = inf
     return result
 
+# Note that the KL between a ContinuousBernoulli and Beta has no closed form
+
+
+@register_kl(ContinuousBernoulli, Pareto)
+def _kl_continuous_bernoulli_infinity(p, q):
+    return _infinite_like(p.probs)
+
+
+@register_kl(ContinuousBernoulli, Exponential)
+def _kl_continuous_bernoulli_exponential(p, q):
+    return -p.entropy() - torch.log(q.rate) + q.rate * p.mean
+
+# Note that the KL between a ContinuousBernoulli and Gamma has no closed form
+# TODO: Add ContinuousBernoulli-Laplace KL Divergence
+
+
+@register_kl(ContinuousBernoulli, Normal)
+def _kl_continuous_bernoulli_normal(p, q):
+    t1 = -p.entropy()
+    t2 = 0.5 * (math.log(2. * math.pi) + torch.square(q.loc / q.scale)) + torch.log(q.scale)
+    t3 = (p.variance + torch.square(p.mean) - 2. * q.loc * p.mean) / (2.0 * torch.square(q.scale))
+    return t1 + t2 + t3
+
+
+@register_kl(ContinuousBernoulli, Uniform)
+def _kl_continuous_bernoulli_uniform(p, q):
+    result = -p.entropy() + (q.high - q.low).log()
+    return torch.where(torch.max(torch.ge(q.low, p.support.lower_bound),
+                                 torch.le(q.high, p.support.upper_bound)),
+                       torch.ones_like(result) * inf, result)
+
 
 @register_kl(Exponential, Beta)
+@register_kl(Exponential, ContinuousBernoulli)
 @register_kl(Exponential, Pareto)
 @register_kl(Exponential, Uniform)
 def _kl_exponential_infinity(p, q):
@@ -523,6 +568,7 @@ def _kl_exponential_normal(p, q):
 
 
 @register_kl(Gamma, Beta)
+@register_kl(Gamma, ContinuousBernoulli)
 @register_kl(Gamma, Pareto)
 @register_kl(Gamma, Uniform)
 def _kl_gamma_infinity(p, q):
@@ -558,6 +604,7 @@ def _kl_gamma_normal(p, q):
 
 
 @register_kl(Gumbel, Beta)
+@register_kl(Gumbel, ContinuousBernoulli)
 @register_kl(Gumbel, Exponential)
 @register_kl(Gumbel, Gamma)
 @register_kl(Gumbel, Pareto)
@@ -578,6 +625,7 @@ def _kl_gumbel_normal(p, q):
 
 
 @register_kl(Laplace, Beta)
+@register_kl(Laplace, ContinuousBernoulli)
 @register_kl(Laplace, Exponential)
 @register_kl(Laplace, Gamma)
 @register_kl(Laplace, Pareto)
@@ -598,6 +646,7 @@ def _kl_laplace_normal(p, q):
 
 
 @register_kl(Normal, Beta)
+@register_kl(Normal, ContinuousBernoulli)
 @register_kl(Normal, Exponential)
 @register_kl(Normal, Gamma)
 @register_kl(Normal, Pareto)
@@ -620,6 +669,7 @@ def _kl_normal_gumbel(p, q):
 
 
 @register_kl(Pareto, Beta)
+@register_kl(Pareto, ContinuousBernoulli)
 @register_kl(Pareto, Uniform)
 def _kl_pareto_infinity(p, q):
     return _infinite_like(p.scale)
@@ -681,6 +731,14 @@ def _kl_uniform_beta(p, q):
     return result
 
 
+@register_kl(Uniform, ContinuousBernoulli)
+def _kl_uniform_continuous_bernoulli(p, q):
+    result = -p.entropy() - p.mean * q.logits - torch.log1p(-q.probs) - q._cont_bern_log_norm()
+    return torch.where(torch.max(torch.ge(p.high, q.support.upper_bound),
+                                 torch.le(p.low, q.support.lower_bound)),
+                       torch.ones_like(result) * inf, result)
+
+
 @register_kl(Uniform, Exponential)
 def _kl_uniform_exponetial(p, q):
     result = q.rate * (p.high + p.low) / 2 - ((p.high - p.low) * q.rate).log()
@@ -737,3 +795,11 @@ def _kl_independent_independent(p, q):
         raise NotImplementedError
     result = kl_divergence(p.base_dist, q.base_dist)
     return _sum_rightmost(result, p.reinterpreted_batch_ndims)
+
+
+@register_kl(Cauchy, Cauchy)
+def _kl_cauchy_cauchy(p, q):
+    # From https://arxiv.org/abs/1905.10965
+    t1 = ((p.scale + q.scale).pow(2) + (p.loc - q.loc).pow(2)).log()
+    t2 = (4 * p.scale * q.scale).log()
+    return t1 - t2

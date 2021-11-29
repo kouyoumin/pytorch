@@ -8,6 +8,8 @@
 #include "caffe2/utils/eigen_utils.h"
 #include "caffe2/utils/math.h"
 
+#include <c10/util/irange.h>
+
 namespace caffe2 {
 namespace utils {
 
@@ -48,6 +50,7 @@ std::vector<int> nms_cpu_upright(
   std::vector<int> keep;
   while (order.size() > 0) {
     // exit if already enough proposals
+    // NOLINTNEXTLINE(clang-diagnostic-sign-compare)
     if (topN >= 0 && keep.size() >= topN) {
       break;
     }
@@ -130,7 +133,7 @@ std::vector<int> soft_nms_cpu_upright(
 
     // Find proposal with max score among remaining proposals
     int max_pos;
-    auto max_score = GetSubArray(*out_scores, pending).maxCoeff(&max_pos);
+    GetSubArray(*out_scores, pending).maxCoeff(&max_pos);
     int i = pending[max_pos];
     keep.push_back(i);
 
@@ -148,7 +151,7 @@ std::vector<int> soft_nms_cpu_upright(
     EArrX ovr = inter / (areas[i] + GetSubArray(areas, rest_indices) - inter);
 
     // Update scores based on computed IoU, overlap threshold and NMS method
-    for (int j = 0; j < rest_indices.size(); ++j) {
+    for (const auto j : c10::irange(rest_indices.size())) {
       typename Derived2::Scalar weight;
       switch (method) {
         case 1: // Linear
@@ -434,9 +437,9 @@ double polygon_area(const Eigen::Vector2f* q, const int& m) {
 double rotated_rect_intersection(
     const RotatedRect& rect1,
     const RotatedRect& rect2) {
-  // There are up to 16 intersections returned from
-  // rotated_rect_intersection_pts
-  Eigen::Vector2f intersectPts[16], orderedPts[16];
+  // There are up to 4 x 4 + 4 + 4 = 24 intersections (including dups) returned
+  // from rotated_rect_intersection_pts
+  Eigen::Vector2f intersectPts[24], orderedPts[24];
   int num = 0; // number of intersections
 
   // Find points of intersection
@@ -448,7 +451,24 @@ double rotated_rect_intersection(
   // https://github.com/opencv/opencv/pull/12222
   // Note: it doesn't matter if #intersections is greater than 8 here
   auto ret = rotated_rect_intersection_pts(rect1, rect2, intersectPts, num);
-  CAFFE_ENFORCE(num <= 16);
+
+  if (num > 24) {
+    // should never happen
+    string msg = "";
+    msg += "num_intersections = " + to_string(num);
+    msg += "; rect1.center = (" + to_string(rect1.center.x()) + ", " +
+        to_string(rect1.center.y()) + "), ";
+    msg += "rect1.size = (" + to_string(rect1.size.x()) + ", " +
+        to_string(rect1.size.y()) + "), ";
+    msg += "rect1.angle = " + to_string(rect1.angle);
+    msg += "; rect2.center = (" + to_string(rect2.center.x()) + ", " +
+        to_string(rect2.center.y()) + "), ";
+    msg += "rect2.size = (" + to_string(rect2.size.x()) + ", " +
+        to_string(rect2.size.y()) + "), ";
+    msg += "rect2.angle = " + to_string(rect2.angle);
+    CAFFE_ENFORCE(num <= 24, msg);
+  }
+
   if (num <= 2)
     return 0.0;
 
@@ -542,6 +562,7 @@ std::vector<int> nms_cpu_rotated(
   std::vector<int> keep;
   while (order.size() > 0) {
     // exit if already enough proposals
+    // NOLINTNEXTLINE(clang-diagnostic-sign-compare)
     if (topN >= 0 && keep.size() >= topN) {
       break;
     }
@@ -552,7 +573,7 @@ std::vector<int> nms_cpu_rotated(
         order.data() + 1, order.size() - 1);
 
     EArrX inter(rest_indices.size());
-    for (int j = 0; j < rest_indices.size(); ++j) {
+    for (const auto j : c10::irange(rest_indices.size())) {
       inter[j] = rotated_rect_intersection(
           rotated_rects[i], rotated_rects[rest_indices[j]]);
     }
@@ -613,7 +634,7 @@ std::vector<int> soft_nms_cpu_rotated(
 
     // Find proposal with max score among remaining proposals
     int max_pos;
-    auto max_score = GetSubArray(*out_scores, pending).maxCoeff(&max_pos);
+    GetSubArray(*out_scores, pending).maxCoeff(&max_pos);
     int i = pending[max_pos];
     keep.push_back(i);
 
@@ -621,7 +642,7 @@ std::vector<int> soft_nms_cpu_rotated(
     std::swap(pending(0), pending(max_pos));
     const auto& rest_indices = pending.tail(pending.size() - 1);
     EArrX inter(rest_indices.size());
-    for (int j = 0; j < rest_indices.size(); ++j) {
+    for (const auto j : c10::irange(rest_indices.size())) {
       inter[j] = rotated_rect_intersection(
           rotated_rects[i], rotated_rects[rest_indices[j]]);
     }
@@ -629,7 +650,7 @@ std::vector<int> soft_nms_cpu_rotated(
 
     // Update scores based on computed IoU, overlap threshold and NMS method
     // TODO (viswanath): Should angle info be included as well while filtering?
-    for (int j = 0; j < rest_indices.size(); ++j) {
+    for (const auto j : c10::irange(rest_indices.size())) {
       typename Derived2::Scalar weight;
       switch (method) {
         case 1: // Linear

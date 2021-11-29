@@ -1,16 +1,9 @@
 import os
 import sys
+from typing import Optional
 
 
-def escape_path(path):
-    "Can be replaced by pathlib.as_posix when Python 3 is required."
-
-    if os.path.sep != '/' and path is not None:
-        return path.replace(os.path.sep, '/')
-    return path
-
-
-def which(thefile):
+def which(thefile: str) -> Optional[str]:
     path = os.environ.get("PATH", os.defpath).split(os.pathsep)
     for d in path:
         fname = os.path.join(d, thefile)

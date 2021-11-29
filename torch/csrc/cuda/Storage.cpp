@@ -2,6 +2,7 @@
 
 #include <torch/csrc/python_headers.h>
 #include <structmember.h>
+#include <fmt/format.h>
 
 // See Note [TH abstraction violation]
 //    - Used to get at allocator from storage
@@ -17,10 +18,4 @@
 #include <torch/csrc/autograd/utils/wrap_outputs.h>
 
 #define THC_GENERIC_FILE "torch/csrc/generic/Storage.cpp"
-#include <THC/THCGenerateAllTypes.h>
-
-#define THC_GENERIC_FILE "torch/csrc/generic/Storage.cpp"
-#include <THC/THCGenerateBoolType.h>
-
-#define THC_GENERIC_FILE "torch/csrc/generic/Storage.cpp"
-#include <THC/THCGenerateBFloat16Type.h>
+#include <THC/THCGenerateByteType.h>

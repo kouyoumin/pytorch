@@ -1,17 +1,53 @@
 import torch
+from . import _functional as F
 from .optimizer import Optimizer
 
 
 class RMSprop(Optimizer):
-    """Implements RMSprop algorithm.
+    r"""Implements RMSprop algorithm.
 
-    Proposed by G. Hinton in his
-    `course <http://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_slides_lec6.pdf>`_.
+    .. math::
+       \begin{aligned}
+            &\rule{110mm}{0.4pt}                                                                 \\
+            &\textbf{input}      : \alpha \text{ (alpha)},\: \gamma \text{ (lr)},
+                \: \theta_0 \text{ (params)}, \: f(\theta) \text{ (objective)}                   \\
+            &\hspace{13mm}   \lambda \text{ (weight decay)},\: \mu \text{ (momentum)},\: centered\\
+            &\textbf{initialize} : v_0 \leftarrow 0 \text{ (square average)}, \:
+                \textbf{b}_0 \leftarrow 0 \text{ (buffer)}, \: g^{ave}_0 \leftarrow 0     \\[-1.ex]
+            &\rule{110mm}{0.4pt}                                                                 \\
+            &\textbf{for} \: t=1 \: \textbf{to} \: \ldots \: \textbf{do}                         \\
+            &\hspace{5mm}g_t           \leftarrow   \nabla_{\theta} f_t (\theta_{t-1})           \\
+            &\hspace{5mm}if \: \lambda \neq 0                                                    \\
+            &\hspace{10mm} g_t \leftarrow g_t + \lambda  \theta_{t-1}                            \\
+            &\hspace{5mm}v_t           \leftarrow   \alpha v_{t-1} + (1 - \alpha) g^2_t
+                \hspace{8mm}                                                                     \\
+            &\hspace{5mm} \tilde{v_t} \leftarrow v_t                                             \\
+            &\hspace{5mm}if \: centered                                                          \\
+            &\hspace{10mm} g^{ave}_t \leftarrow g^{ave}_{t-1} \alpha + (1-\alpha) g_t            \\
+            &\hspace{10mm} \tilde{v_t} \leftarrow \tilde{v_t} -  \big(g^{ave}_{t} \big)^2        \\
+            &\hspace{5mm}if \: \mu > 0                                                           \\
+            &\hspace{10mm} \textbf{b}_t\leftarrow \mu \textbf{b}_{t-1} +
+                g_t/ \big(\sqrt{\tilde{v_t}} +  \epsilon \big)                                   \\
+            &\hspace{10mm} \theta_t \leftarrow \theta_{t-1} - \gamma \textbf{b}_t                \\
+            &\hspace{5mm} else                                                                   \\
+            &\hspace{10mm}\theta_t      \leftarrow   \theta_{t-1} -
+                \gamma  g_t/ \big(\sqrt{\tilde{v_t}} + \epsilon \big)  \hspace{3mm}              \\
+            &\rule{110mm}{0.4pt}                                                          \\[-1.ex]
+            &\bf{return} \:  \theta_t                                                     \\[-1.ex]
+            &\rule{110mm}{0.4pt}                                                          \\[-1.ex]
+       \end{aligned}
 
-    The centered version first appears in `Generating Sequences
+    For further details regarding the algorithm we refer to
+    `lecture notes <https://www.cs.toronto.edu/~tijmen/csc321/slides/lecture_slides_lec6.pdf>`_ by G. Hinton.
+    and centered version `Generating Sequences
     With Recurrent Neural Networks <https://arxiv.org/pdf/1308.0850v5.pdf>`_.
+    The implementation here takes the square root of the gradient average before
+    adding epsilon (note that TensorFlow interchanges these two operations). The effective
+    learning rate is thus :math:`\gamma/(\sqrt{v} + \epsilon)` where :math:`\gamma`
+    is the scheduled learning rate and :math:`v` is the weighted moving average
+    of the squared gradient.
 
-    Arguments:
+    Args:
         params (iterable): iterable of parameters to optimize or dicts defining
             parameter groups
         lr (float, optional): learning rate (default: 1e-2)
@@ -46,57 +82,66 @@ class RMSprop(Optimizer):
             group.setdefault('momentum', 0)
             group.setdefault('centered', False)
 
+    @torch.no_grad()
     def step(self, closure=None):
         """Performs a single optimization step.
 
-        Arguments:
+        Args:
             closure (callable, optional): A closure that reevaluates the model
                 and returns the loss.
         """
         loss = None
         if closure is not None:
-            loss = closure()
+            with torch.enable_grad():
+                loss = closure()
 
         for group in self.param_groups:
+            params_with_grad = []
+            grads = []
+            square_avgs = []
+            grad_avgs = []
+            momentum_buffer_list = []
+
             for p in group['params']:
                 if p.grad is None:
                     continue
-                grad = p.grad.data
-                if grad.is_sparse:
+                params_with_grad.append(p)
+
+                if p.grad.is_sparse:
                     raise RuntimeError('RMSprop does not support sparse gradients')
+                grads.append(p.grad)
+
                 state = self.state[p]
 
                 # State initialization
                 if len(state) == 0:
                     state['step'] = 0
-                    state['square_avg'] = torch.zeros_like(p.data)
+                    state['square_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
                     if group['momentum'] > 0:
-                        state['momentum_buffer'] = torch.zeros_like(p.data)
+                        state['momentum_buffer'] = torch.zeros_like(p, memory_format=torch.preserve_format)
                     if group['centered']:
-                        state['grad_avg'] = torch.zeros_like(p.data)
+                        state['grad_avg'] = torch.zeros_like(p, memory_format=torch.preserve_format)
 
-                square_avg = state['square_avg']
-                alpha = group['alpha']
+                square_avgs.append(state['square_avg'])
+
+                if group['momentum'] > 0:
+                    momentum_buffer_list.append(state['momentum_buffer'])
+                if group['centered']:
+                    grad_avgs.append(state['grad_avg'])
 
                 state['step'] += 1
 
-                if group['weight_decay'] != 0:
-                    grad = grad.add(group['weight_decay'], p.data)
 
-                square_avg.mul_(alpha).addcmul_(1 - alpha, grad, grad)
-
-                if group['centered']:
-                    grad_avg = state['grad_avg']
-                    grad_avg.mul_(alpha).add_(1 - alpha, grad)
-                    avg = square_avg.addcmul(-1, grad_avg, grad_avg).sqrt().add_(group['eps'])
-                else:
-                    avg = square_avg.sqrt().add_(group['eps'])
-
-                if group['momentum'] > 0:
-                    buf = state['momentum_buffer']
-                    buf.mul_(group['momentum']).addcdiv_(grad, avg)
-                    p.data.add_(-group['lr'], buf)
-                else:
-                    p.data.addcdiv_(-group['lr'], grad, avg)
+            F.rmsprop(params_with_grad,
+                      grads,
+                      square_avgs,
+                      grad_avgs,
+                      momentum_buffer_list,
+                      lr=group['lr'],
+                      alpha=group['alpha'],
+                      eps=group['eps'],
+                      weight_decay=group['weight_decay'],
+                      momentum=group['momentum'],
+                      centered=group['centered'])
 
         return loss

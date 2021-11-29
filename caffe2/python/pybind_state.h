@@ -35,7 +35,7 @@
 
 #else
 
-struct PyArrayObject;  // Forward declaring PyArrayObject for safety
+struct PyArrayObject; // Forward declaring PyArrayObject for safety
 
 #endif // USE_NUMPY
 
@@ -52,6 +52,9 @@ void addObjectMethods(pybind11::module& m);
 // Get current workspace
 Workspace* GetCurrentWorkspace();
 
+// Get workspace by name. Returns nullptr if none exists by name.
+Workspace* GetWorkspaceByName(const std::string& name);
+
 class C10_EXPORT BlobFetcherBase {
  public:
   struct FetchedBlob {
@@ -65,8 +68,11 @@ class C10_EXPORT BlobFetcherBase {
 class BlobFeederBase {
  public:
   virtual ~BlobFeederBase();
-  virtual void
-  Feed(const DeviceOption& option, PyArrayObject* array, Blob* blob, bool in_place = false) = 0;
+  virtual void Feed(
+      const DeviceOption& option,
+      PyArrayObject* array,
+      Blob* blob,
+      bool in_place = false) = 0;
 };
 
 C10_DECLARE_TYPED_REGISTRY(
@@ -97,8 +103,8 @@ static_assert(
     "We make an assumption that int is always int32 for numpy "
     "type mapping.");
 
-int CaffeToNumpyType(const TypeMeta& dtype);
-const TypeMeta& NumpyTypeToCaffe(int numpy_type);
+int CaffeToNumpyType(const TypeMeta dtype);
+const TypeMeta NumpyTypeToCaffe(int numpy_type);
 
 class TensorFetcher : public BlobFetcherBase {
  public:
@@ -108,7 +114,7 @@ class TensorFetcher : public BlobFetcherBase {
 
   // Checks whether the data with type `dtype` needs to be copied in the context
   // of `tensor`
-  bool NeedsCopy(const Tensor* tensor, const TypeMeta& dtype) const {
+  bool NeedsCopy(const Tensor* tensor, const TypeMeta dtype) const {
 #ifdef USE_NUMPY
     return tensor->GetDeviceType() != CPU ||
         CaffeToNumpyType(dtype) == NPY_OBJECT;
@@ -194,9 +200,9 @@ class TensorFeeder : public BlobFeederBase {
     auto g = MakeGuard([&]() { Py_XDECREF(array); });
 
     const auto npy_type = PyArray_TYPE(array);
-    const TypeMeta& dtype = NumpyTypeToCaffe(npy_type);
+    const TypeMeta dtype = NumpyTypeToCaffe(npy_type);
     CAFFE_ENFORCE(
-        dtype.id() != TypeIdentifier::uninitialized(),
+        dtype != ScalarType::Undefined,
         "This numpy data type is not supported: ",
         PyArray_TYPE(array),
         ".");
@@ -226,24 +232,19 @@ class TensorFeeder : public BlobFeederBase {
         for (int i = 0; i < tensor.numel(); ++i) {
           char* str;
           Py_ssize_t strSize;
-#if PY_MAJOR_VERSION > 2
           if (PyBytes_Check(input[i])) {
             CAFFE_ENFORCE(
                 PyBytes_AsStringAndSize(input[i], &str, &strSize) != -1,
                 "Had a PyBytes object but cannot convert it to a string.");
           } else if (PyUnicode_Check(input[i])) { // string
-            str = const_cast<char*>(PyUnicode_AsUTF8AndSize(input[i], &strSize));
+            str =
+                const_cast<char*>(PyUnicode_AsUTF8AndSize(input[i], &strSize));
             CAFFE_ENFORCE(
                 str,
                 "Had a PyUnicode object but cannot convert it to a string.");
           } else {
             CAFFE_THROW("Unsupported python object type passed into ndarray.");
           }
-#else
-          CAFFE_ENFORCE(
-              PyBytes_AsStringAndSize(input[i], &str, &strSize) != -1,
-              "Unsupported python object type passed into ndarray.");
-#endif // PY_MAJOR_VERSION > 2
           outPtr[i] = std::string(str, strSize);
         }
         break;
@@ -327,10 +328,21 @@ class PythonOpBase : public Operator<Context> {
       try {
         auto pickle =
             py::reinterpret_steal<py::object>(PyImport_ImportModule("pickle"));
+
         CAFFE_ENFORCE(pickle);
         auto loads = pickle.attr("loads").cast<py::object>();
         CAFFE_ENFORCE(loads);
-        auto builder_call = loads(py::bytes(pickled)).cast<py::tuple>();
+        py::tuple builder_call;
+        try {
+          builder_call = loads(py::bytes(pickled)).cast<py::tuple>();
+        } catch (const py::error_already_set& e) {
+          LOG(INFO) << "Cannot unpickle python operator: " << e.what();
+          LOG(INFO) << "Try latin1 encoding for python3 run";
+          // to use the `_a` literal for arguments
+          using namespace pybind11::literals;
+          builder_call = loads(py::bytes(pickled), "encoding"_a = "latin1")
+                             .template cast<py::tuple>();
+        }
         CAFFE_ENFORCE(builder_call);
         CAFFE_ENFORCE_EQ(py::len(builder_call), 3);
         auto func = builder_call[0].cast<py::object>();
@@ -338,16 +350,15 @@ class PythonOpBase : public Operator<Context> {
         auto kwargs = builder_call[2].cast<py::dict>();
         auto built_func = func(*args, **kwargs);
         CAFFE_ENFORCE(built_func);
-        built_func_.reset(
-            new Func{built_func,
-                     OperatorBase::template GetSingleArgument<bool>(
-                         "pass_workspace", false)});
+        built_func_.reset(new Func{
+            built_func,
+            OperatorBase::template GetSingleArgument<bool>(
+                "pass_workspace", false)});
       } catch (const py::error_already_set& e) {
-        std::stringstream error;
-        error << "Python exception encountered while creating PythonOp: "
-              << e.what();
-        LOG(ERROR) << error.str();
-        CAFFE_THROW(error.str());
+        LOG(ERROR) << "Python exception encountered while creating PythonOp: "
+                   << e.what();
+        // Rethrow exception to preserve python exception type.
+        throw;
       }
     }
   }
@@ -418,11 +429,10 @@ class PythonOpBase : public Operator<Context> {
           pyFunc->py_func(inputs, outputs);
         }
       } catch (const py::error_already_set& e) {
-        std::stringstream error;
-        error << "Exception encountered running PythonOp function: "
-              << e.what();
-        LOG(ERROR) << error.str();
-        CAFFE_THROW(error.str());
+        LOG(ERROR) << "Exception encountered running PythonOp function: "
+                   << e.what();
+        // Rethrow exception to preserve python exception type.
+        throw;
       }
     }
     return true;

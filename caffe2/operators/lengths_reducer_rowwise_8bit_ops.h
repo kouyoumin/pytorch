@@ -53,7 +53,6 @@ class SparseLengths8BitsRowwiseOp : public Operator<Context> {
         "the second dim of scale_bias has to be equal to 2");
     CAFFE_ENFORCE_EQ(1, indicesInput.dim(), "INDICES must be a vector");
     const IndexType* indices = indicesInput.template data<IndexType>();
-    int64_t dataToReduceSize = indicesInput.size(0);
 
     const int* lengths = lengthsInput.template data<int>();
     vector<int64_t> shape = dataInput.sizes().vec();
@@ -74,7 +73,7 @@ class SparseLengths8BitsRowwiseOp : public Operator<Context> {
         in_block_size,
         outputSize,
         indices_size,
-        N, // embeding table length
+        N, // embedding table length
         input_data,
         indices,
         lengths,
@@ -180,5 +179,5 @@ class Rowwise8BitQuantizedToFloatOp : public Operator<Context> {
   INPUT_TAGS(DATA_UINT8, SCALE_BIAS);
   OUTPUT_TAGS(DATA_FLOAT);
 };
-}
+} // namespace caffe2
 #endif // CAFFE2_OPERATORS_LENGTHS_REDUCER_ROWWISE_8bits_H_

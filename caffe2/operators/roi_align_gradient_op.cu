@@ -3,19 +3,12 @@
 #include <stdio.h>
 #include <cfloat>
 #include "caffe2/core/context_gpu.h"
+#include "caffe2/utils/GpuAtomics.cuh"
 #include "caffe2/utils/math.h"
 
 namespace caffe2 {
 
 namespace {
-
-template <typename T>
-inline __device__ T gpu_atomic_add(const T val, T* address);
-
-template <>
-inline __device__ float gpu_atomic_add(const float val, float* address) {
-  return atomicAdd(address, val);
-}
 
 template <typename T>
 __device__ void bilinear_interpolate_gradient(
@@ -93,7 +86,8 @@ __global__ void RoIAlignBackwardFeature(
     const int pooled_width,
     const int sampling_ratio,
     T* bottom_diff,
-    const T* bottom_rois) {
+    const T* bottom_rois,
+    bool continuous_coordinate) {
   CUDA_1D_KERNEL_LOOP(index, nthreads) {
     // (n, c, ph, pw) is an element in the pooled output
     int pw = index % pooled_width;
@@ -105,18 +99,19 @@ __global__ void RoIAlignBackwardFeature(
     int roi_batch_ind = offset_bottom_rois[0];
 
     // Do not using rounding; this implementation detail is critical
-    T roi_start_w = offset_bottom_rois[1] * spatial_scale;
-    T roi_start_h = offset_bottom_rois[2] * spatial_scale;
-    T roi_end_w = offset_bottom_rois[3] * spatial_scale;
-    T roi_end_h = offset_bottom_rois[4] * spatial_scale;
-    // T roi_start_w = roundf(offset_bottom_rois[1] * spatial_scale);
-    // T roi_start_h = roundf(offset_bottom_rois[2] * spatial_scale);
-    // T roi_end_w = roundf(offset_bottom_rois[3] * spatial_scale);
-    // T roi_end_h = roundf(offset_bottom_rois[4] * spatial_scale);
+    T roi_offset = continuous_coordinate ? T(0.5) : 0;
+    T roi_start_w = offset_bottom_rois[1] * spatial_scale - roi_offset;
+    T roi_start_h = offset_bottom_rois[2] * spatial_scale - roi_offset;
+    T roi_end_w = offset_bottom_rois[3] * spatial_scale - roi_offset;
+    T roi_end_h = offset_bottom_rois[4] * spatial_scale - roi_offset;
 
-    // Force malformed ROIs to be 1x1
-    T roi_width = c10::cuda::compat::max(roi_end_w - roi_start_w, (T)1.);
-    T roi_height = c10::cuda::compat::max(roi_end_h - roi_start_h, (T)1.);
+    T roi_width = roi_end_w - roi_start_w;
+    T roi_height = roi_end_h - roi_start_h;
+    if (!continuous_coordinate) { // backward compatibility
+      // Force malformed ROIs to be 1x1
+      roi_width = c10::cuda::compat::max(roi_width, (T)1.);
+      roi_height = c10::cuda::compat::max(roi_height, (T)1.);
+    }
     T bin_size_h = static_cast<T>(roi_height) / static_cast<T>(pooled_height);
     T bin_size_w = static_cast<T>(roi_width) / static_cast<T>(pooled_width);
 
@@ -172,13 +167,13 @@ __global__ void RoIAlignBackwardFeature(
 
         if (x_low >= 0 && x_high >= 0 && y_low >= 0 && y_high >= 0) {
           gpu_atomic_add(
-              static_cast<T>(g1), offset_bottom_diff + y_low * width + x_low);
+              offset_bottom_diff + y_low * width + x_low, static_cast<T>(g1));
           gpu_atomic_add(
-              static_cast<T>(g2), offset_bottom_diff + y_low * width + x_high);
+              offset_bottom_diff + y_low * width + x_high, static_cast<T>(g2));
           gpu_atomic_add(
-              static_cast<T>(g3), offset_bottom_diff + y_high * width + x_low);
+              offset_bottom_diff + y_high * width + x_low, static_cast<T>(g3));
           gpu_atomic_add(
-              static_cast<T>(g4), offset_bottom_diff + y_high * width + x_high);
+              offset_bottom_diff + y_high * width + x_high, static_cast<T>(g4));
         } // if
       } // ix
     } // iy
@@ -188,7 +183,7 @@ __global__ void RoIAlignBackwardFeature(
 } // namespace
 
 template <>
-bool RoIAlignGradientOp<float, CUDAContext>::RunOnDevice() {
+C10_EXPORT bool RoIAlignGradientOp<float, CUDAContext>::RunOnDevice() {
   auto& X = Input(0); // Input data to pool
   auto& R = Input(1); // RoIs
   auto& dY = Input(2); // Gradient of net w.r.t. output of "forward" op
@@ -220,7 +215,9 @@ bool RoIAlignGradientOp<float, CUDAContext>::RunOnDevice() {
             pooled_width_,
             sampling_ratio_,
             dX->template mutable_data<float>(),
-            R.data<float>());
+            R.data<float>(),
+            aligned_);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
   return true;
 }
@@ -228,4 +225,12 @@ bool RoIAlignGradientOp<float, CUDAContext>::RunOnDevice() {
 REGISTER_CUDA_OPERATOR(
     RoIAlignGradient,
     RoIAlignGradientOp<float, CUDAContext>);
+
+template <typename T>
+using RoIAlignGradientCUDAOp = RoIAlignGradientOp<T, CUDAContext>;
+
 } // namespace caffe2
+
+C10_EXPORT_CAFFE2_OP_TO_C10_CUDA(
+    RoIAlignGradient,
+    caffe2::RoIAlignGradientCUDAOp<float>);

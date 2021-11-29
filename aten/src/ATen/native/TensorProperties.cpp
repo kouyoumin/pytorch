@@ -1,12 +1,11 @@
 #include <ATen/ATen.h>
 #include <ATen/NativeFunctions.h>
-#include <ATen/WrapDimUtils.h>
 #include <ATen/detail/CUDAHooksInterface.h>
-#ifdef BUILD_NAMEDTENSOR
 #include <ATen/NamedTensorUtils.h>
-#endif
+#include <torch/library.h>
 
 #include <ATen/Config.h>
+#include <c10/util/irange.h>
 namespace at {
 namespace native {
 
@@ -15,18 +14,13 @@ bool is_same_size(const Tensor& self, const Tensor& other) {
 }
 
 int64_t size(const Tensor& self, int64_t dim) {
-  // false is passed to maybe_wrap_dim so behavior is identical to array access (but with wrapping)
-  dim = maybe_wrap_dim(dim, self.dim(), false);
-  return self.sizes()[dim];
+  return self.size(dim);
 }
 
 int64_t stride(const Tensor& self, int64_t dim) {
-  // false is passed to maybe_wrap_dim so behavior is identical to array access (but with wrapping)
-  dim = maybe_wrap_dim(dim, self.dim(), false);
-  return self.strides()[dim];
+  return self.stride(dim);
 }
 
-#ifdef BUILD_NAMEDTENSOR
 int64_t size(const Tensor& self, Dimname dim) {
   size_t pos_dim = dimname_to_position(self, dim);
   return self.sizes()[pos_dim];
@@ -36,7 +30,6 @@ int64_t stride(const Tensor& self, Dimname dim) {
   size_t pos_dim = dimname_to_position(self, dim);
   return self.strides()[pos_dim];
 }
-#endif
 
 bool cudnn_is_acceptable(const Tensor& self) {
   if (!globalContext().userEnabledCuDNN()) return false;
@@ -55,15 +48,9 @@ bool cudnn_is_acceptable(const Tensor& self) {
   return true;
 }
 
-Tensor detach(const Tensor& self) {
-  // this just exists to give us a hook in VariableType and an entry in Declarations.yaml
-  AT_ERROR("detach is not implemented for Tensor");
-  return self;
-}
-
 Tensor & detach_(Tensor & self) {
   // this just exists to give us a hook in VariableType and an entry in Declarations.yaml
-  AT_ERROR("detach_ is not implemented for Tensor");
+  //AT_ERROR("detach_ is not implemented for Tensor");
   return self;
 }
 
@@ -79,8 +66,22 @@ Tensor contiguous(const Tensor& self, MemoryFormat memory_format) {
       memory_format != MemoryFormat::Preserve,
       "preserve memory format is unsupported by the contiguous operator");
 
-  auto result = at::empty_like(self, self.options(), memory_format);
-  return result.copy_(self);
+  return self.clone(memory_format);
 }
+
+bool is_set_to(const Tensor& self, const Tensor& src) {
+  if (self.storage().unsafeGetStorageImpl() == src.storage().unsafeGetStorageImpl() &&
+      self.storage_offset() == src.storage_offset() &&
+      self.dim() == src.dim()) {
+    for (const auto d : c10::irange(self.dim())) {
+      if (self.size(d) != src.size(d) || self.stride(d) != src.stride(d)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 } // namespace native
 } // namespace at

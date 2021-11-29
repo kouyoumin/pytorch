@@ -13,20 +13,18 @@ static void lerp_kernel_scalar(
     Tensor& ret,
     const Tensor& self,
     const Tensor& end,
-    Scalar weight) {
-  auto iter = TensorIterator();
-  iter.add_output(ret);
-  iter.add_input(self);
-  iter.add_input(end);
-  iter.build();
-  AT_DISPATCH_FLOATING_TYPES(ret.scalar_type(), "lerp_kernel_scalar", [&] {
+    const Scalar& weight) {
+  TORCH_CHECK(self.dtype() == end.dtype(), "expected dtype ", self.dtype(), " for `end` but got dtype ", end.dtype());
+  auto iter = TensorIterator::borrowing_binary_op(ret, self, end);
+  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(ret.scalar_type(), "lerp_kernel_scalar", [&] {
+    using value_t = typename c10::scalar_value_type<scalar_t>::type;
     scalar_t weight_val = weight.to<scalar_t>();
     at::native::cpu_kernel(
         iter,
         [weight_val](scalar_t self_val, scalar_t end_val) {
-          return (weight_val < 0.5)
+          return (zabs<scalar_t, value_t>(weight_val) < 0.5)
               ? self_val + weight_val * (end_val - self_val)
-              : end_val - (end_val - self_val) * (1 - weight_val);
+              : end_val - (end_val - self_val) * (scalar_t(1) - weight_val);
         });
   });
 }
@@ -36,19 +34,22 @@ static void lerp_kernel_tensor(
     const Tensor& self,
     const Tensor& end,
     const Tensor& weights) {
-  auto iter = TensorIterator();
-  iter.add_output(ret);
-  iter.add_input(self);
-  iter.add_input(end);
-  iter.add_input(weights);
-  iter.build();
-  AT_DISPATCH_FLOATING_TYPES(ret.scalar_type(), "lerp_kernel_tensor", [&] {
+  TORCH_CHECK(self.dtype() == end.dtype(), "expected dtype ", self.dtype(), " for `end` but got dtype ", end.dtype());
+  TORCH_CHECK(self.dtype() == weights.dtype(), "expected dtype ", self.dtype(), " for `weights` but got dtype ", weights.dtype());
+  auto iter = TensorIteratorConfig()
+    .add_output(ret)
+    .add_input(self)
+    .add_input(end)
+    .add_input(weights)
+    .build();
+  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(ret.scalar_type(), "lerp_kernel_tensor", [&] {
+    using value_t = typename c10::scalar_value_type<scalar_t>::type;
     at::native::cpu_kernel(
         iter,
         [](scalar_t self_val, scalar_t end_val, scalar_t weight_val) {
-          return (weight_val < 0.5)
+          return (zabs<scalar_t, value_t>(weight_val) < 0.5)
               ? self_val + weight_val * (end_val - self_val)
-              : end_val - (end_val - self_val) * (1 - weight_val);
+              : end_val - (end_val - self_val) * (scalar_t(1) - weight_val);
         });
   });
 }
