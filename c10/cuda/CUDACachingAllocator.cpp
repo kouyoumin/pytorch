@@ -303,7 +303,7 @@ cudaError_t cudaMallocMaybeCapturing(void** p, size_t size) {
   if (at::cuda::currentStreamCaptureStatusMayInitCtx() ==
       at::cuda::CaptureStatus::None) {
 #endif
-    return cudaMalloc(p, size);
+    return cudaMallocManaged(p, size);
 #if defined(CUDA_VERSION) && CUDA_VERSION >= 11000
   } else {
     // It's ok to capture cudaMallocs, as long as we never cudaFree those
@@ -311,7 +311,7 @@ cudaError_t cudaMallocMaybeCapturing(void** p, size_t size) {
     // Capturing cudaMalloc behaves nicely: it gives the graph new VA,
     // but is ignored (won't leakily allocate new memory) in replays.
     at::cuda::CUDAStreamCaptureModeGuard g{cudaStreamCaptureModeRelaxed};
-    return cudaMalloc(p, size);
+    return cudaMallocManaged(p, size);
   }
 #endif
 }
@@ -1476,7 +1476,7 @@ struct CudaCachingAllocator : public Allocator {
     if (forceUncachedAllocator()) {
       // Deliberately don't use cudaMallocMaybeCapturing here, to force an error
       // if someone tries to use forceUncachedAllocator while capturing.
-      C10_CUDA_CHECK(cudaMalloc(&r, size));
+      C10_CUDA_CHECK(cudaMallocManaged(&r, size));
       return {r, r, &uncached_delete, Device(DeviceType::CUDA, device)};
     }
     if (size != 0) {
