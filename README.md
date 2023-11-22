@@ -1,4 +1,4 @@
-PyTorch with unified memory and cross-GPU memory access.
+# PyTorch with support for unified memory and cross-GPU memory access.
 
 --------------------------------------------------------------------------------
 
